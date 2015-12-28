@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////
 // Master ESP8266 Sketch
-// V0.4
+// V0.4.1
 // by hessemar
 // http://blog.silvertech.at
 //////////////////////////////////////////////////////////////
@@ -17,8 +17,8 @@
 #include <Bounce2.h>            //Taster Bounce Lib https://github.com/thomasfredericks/Bounce2
 
 
-const char* ssid = "Kabellos";           //WLAN SSID
-const char* password = "Come!in$";       //WLAN Kennwort
+const char* ssid = "WLAN-SSID";           //WLAN SSID
+const char* password = "password-1";       //WLAN Kennwort
 const char* host = "192.168.88.114";     //Webserver IP
 const int netdeviceid = 2;               //NetzwerkGeräte ID
 int t1_old = 0;                          //Taster Zustand bei letzten Durchlauf
