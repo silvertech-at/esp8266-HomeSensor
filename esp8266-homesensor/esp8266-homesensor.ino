@@ -1,13 +1,13 @@
 //////////////////////////////////////////////////////////////
 // Master ESP8266 Sketch
 // V0.4.1
-// by hessemar
+// by wi3
 // http://blog.silvertech.at
 //////////////////////////////////////////////////////////////
 // Der Code Arbeitet verschiedene Sensoren ab und
-// überträgt die Daten per HTTP an den Webserver.
+// überträgt die Daten an den Webserver und MQTT Broker.
 // 
-// Arduino IDE 1.6.4
+// Arduino IDE 1.6.5-R5
 //////////////////////////////////////////////////////////////
 
 #include <ESP8266WiFi.h>        //ESP8266
@@ -15,25 +15,31 @@
 #include <DallasTemperature.h>  //Onewire Temp. Lib https://github.com/milesburton/Arduino-Temperature-Control-Library
 #include <DHT.h>                // Adafruit DHT Lib https://github.com/adafruit/DHT-sensor-library
 #include <Bounce2.h>            //Taster Bounce Lib https://github.com/thomasfredericks/Bounce2
+#include <PubSubClient.h>       //MQTT Lib https://github.com/knolleary/pubsubclient
 
 
-const char* ssid = "WLAN-SSID";           //WLAN SSID
-const char* password = "password-1";       //WLAN Kennwort
-const char* host = "192.168.88.114";     //Webserver IP
-const int netdeviceid = 2;               //NetzwerkGeräte ID
-int t1_old = 0;                          //Taster Zustand bei letzten Durchlauf
-int t2_old = 0;                          //Taster Zustand bei letzten Durchlauf
+const char* ssid = "WLAN-SSID";                //WLAN SSID
+const char* password = "password-1";           //WLAN Kennwort
+const char* host = "192.168.88.114";           //Webserver IP
+const char* mqtt_server = "192.168.88.103";    //MQTT Broker
+const char* devicename = "testESP";            //Geräte Namen
+const int deviceid = 2;                        //Geräte ID
+
+
+int t1_old = 0;                                //Taster Zustand bei letzten Durchlauf
+int t2_old = 0;                                //Taster Zustand bei letzten Durchlauf
+
 
 //Sensoren definieren
    //SensorID 99 = nothing / PIN -1 = nothing 
-   //sSensorName {[SensorID],[PIN#1],<Pin#2>,<HTTP_POST-Interval in s>} //Bus-Type
-int sOneWire[] = {3,13,600};      //1Wire
+   //sSensorName {[SensorID],[PIN#1],<Pin#2>,<Interval in s>} //Bus-Type
+int sOneWire[] = {99,13,60};      //1Wire
 int sDHT22[] = {-1,2,-1};
 int sBMP180[] = {-1,-1,-1};
 int sRelay1[] = {4,15,-1};      //Licht Relay
-int sRelay2[] = {-1,99,-1};
+int sRelay2[] = {-1,14,-1};
 int sMotionDetect[] = {-1,-1};
-int sSi7021[] = {-1,-1};      //I2C
+int sSi7021[] = {-1,-1};        //I2C
 int sTaster1[] = {-1,4};
 int sTaster2[] = {-1,12};
 
@@ -43,7 +49,10 @@ int sTaster2[] = {-1,12};
 #define DHTTYPE DHT22
 #define taster_1 sTaster1[1]  
 #define taster_2 sTaster2[1]  
-#define ausgang  sRelay1[1] 
+#define Relay1  sRelay1[1] 
+#define Relay2  sRelay2[1]
+
+
 
 //Sensor Setup
 OneWire oneWire(ONE_WIRE_BUS);
@@ -51,6 +60,13 @@ DallasTemperature sensors(&oneWire);
 DHT dht(DHTPIN, DHTTYPE);
 Bounce debouncer_t1 = Bounce();
 Bounce debouncer_t2 = Bounce();
+
+//MQTT Setup
+WiFiClient espClient;
+PubSubClient client(espClient);
+long lastMsg = 0;
+char msg[50];
+int value = 0;
 
 
 //Old Millis Variablen pro Sensor
@@ -70,8 +86,10 @@ void setup() {
   dht.begin();
   pinMode(taster_1, INPUT);     //Taster 1
   pinMode(taster_2, INPUT);     //Taster 2
-  pinMode(ausgang,OUTPUT);      //Relay Ausgang
-  digitalWrite(ausgang,HIGH);    //Default Wert nach PowerOn
+  pinMode(Relay1,OUTPUT);      //Relay Relay1
+  pinMode(Relay2,OUTPUT);      //Relay Relay2
+  digitalWrite(Relay1,LOW);    //Default Wert nach PowerOn
+  digitalWrite(Relay2,LOW);    //Default Wert nach PowerOn
   debouncer_t1.attach(taster_1);
   debouncer_t1.interval(5);
   debouncer_t2.attach(taster_2);
@@ -80,7 +98,7 @@ void setup() {
   //Serial Start
   Serial.begin(115200);
   delay(10);
-  
+  Serial.println(devicename);
   // We start by connecting to a WiFi network
   WiFi.mode(WIFI_STA);
   Serial.println();
@@ -98,28 +116,30 @@ void setup() {
   Serial.println(WiFi.localIP());
   Serial.println(" ");
 //Ende - Wifi Connect
-}
 
+//MQTT
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
+  
+}
 
 //////////////////////
 ////LOOP
 //////////////////////
 void loop() {
-  
-  
-  //test
-  //Data2WebSrv(99,33);
-  //test ende
  
   //Produktiv
   TasterSchaltung( sRelay1[0]);
   //DHT22Hum(sDHT22[0]);
-  OneWireTemp(sOneWire[0]);
+  OneWireTemp(false); //warning in function
   
-  //no delay needed, every function is controlled by time interval
-  //delay(2000);      //dev interval
-  //delay(600000);    //long test 10min interval
+  //MQTT
+   if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
 }
+
 
 //////////////////////
 ////Data to Webserver
@@ -161,27 +181,33 @@ void Data2WebSrv(int SensorID,float Wert){
     String line = client.readStringUntil('\r');
     //Serial.print(line);
   }
-  Serial.println("closing connection");
+  //Serial.println("closing connection");
+  
+  //Serial.print("Millis= ");
+  //Serial.println(millis());
   return;
-  Serial.print("Millis= ");
-  Serial.println(millis());
   }
 
 ////////////////////////
 ////OneWire Temp Sensor
 ////////////////////////
   
-void OneWireTemp(int sID){
+char *OneWireTemp(bool now){
   
-if ((millis() - lastmillis_OneWire) >= (sOneWire[2] * 1000)){
+if ((millis() - lastmillis_OneWire) >= (sOneWire[2] * 1000) || now == true ){
   //Get One Wire Data
   sensors.requestTemperatures();
   //Serial.println( sensors.getTempCByIndex(0));
-  float TmpWert = sensors.getTempCByIndex(0);
-  
   //Daten an WebSrv übergeben
-  Data2WebSrv(sID,TmpWert);
+  float TmpWert = sensors.getTempCByIndex(0);
+  //Data2WebSrv(sID,TmpWert);
+  //MQTT
+  char mTmpWert[20];
+  dtostrf(TmpWert, 4, 1,mTmpWert);
+  client.publish("testESP/onewire/state", mTmpWert);
   lastmillis_OneWire = millis();
+
+  return mTmpWert;
   }
  }
   
@@ -222,22 +248,22 @@ void TasterSchaltung(int sID){
  debouncer_t2.update();
  int t1_stat = debouncer_t1.read();
  int t2_stat = debouncer_t2.read();
- int ausg_stat = digitalRead(ausgang);
+ int ausg_stat = digitalRead(Relay1);
  //get informations
  //Serial.println("    ");
- //Serial.print("ausgang= ");
+ //Serial.print("Relay1= ");
  //Serial.println(ausg_stat);
  //Serial.print("taster1u2= ");
  //Serial.print(t1_stat );
  //Serial.println(t2_stat);
  
  
- //Zustände des Ausgang (zu Relay) behandeln
+ //Zustände des Ausg. (zu Relay) behandeln
  switch (ausg_stat){
   case HIGH:                                           //LICHT IST EIN
    //Serial.println("Licht ist an");                    
      if ((t1_stat == HIGH) && (t1_old != t1_stat)){    //Taster1 - ausschalten
-       digitalWrite(ausgang,LOW);
+       digitalWrite(Relay1,LOW);
        t1_old = HIGH;
        Data2WebSrv(sID,0);
      }
@@ -247,7 +273,7 @@ void TasterSchaltung(int sID){
        }
      }
      if ((t2_stat == HIGH) && (t2_old != t2_stat)){    //Taster2 - ausschalten
-       digitalWrite(ausgang,LOW);
+       digitalWrite(Relay1,LOW);
        t2_old = HIGH;
        Data2WebSrv(sID,0);
      }
@@ -260,7 +286,7 @@ void TasterSchaltung(int sID){
   case LOW:                                            //LICHT IST AUS
    //Serial.println("Licht ist aus");
     if ((t1_stat == HIGH) && (t1_old != t1_stat)){     //Taster1 - einschalten
-       digitalWrite(ausgang,HIGH);
+       digitalWrite(Relay1,HIGH);
        t1_old = HIGH;
        Data2WebSrv(sID,1);
     }
@@ -270,7 +296,7 @@ void TasterSchaltung(int sID){
        }
     }
      if ((t2_stat == HIGH) && (t2_old != t2_stat)){     //Taster2 - einschalten
-       digitalWrite(ausgang,HIGH);
+       digitalWrite(Relay1,HIGH);
        t2_old = HIGH;
        Data2WebSrv(sID,1);
     }
@@ -285,3 +311,82 @@ void TasterSchaltung(int sID){
   break;
    }
   }
+  
+
+//////////////////////////
+////MQTT Callback
+//////////////////////////
+  
+void callback(char* topic, byte* payload, unsigned int length) {
+
+  // Hilfsvariablen um empfangene Daten als String zu behandeln
+  int i = 0;
+  char message_buff[100];
+
+  // Epfangene Nachtricht ausgeben
+  Serial.println("Message arrived: topic: " + String(topic));
+  Serial.println("Length: " + String(length,DEC));
+
+  // Nachricht kopieren
+  for(i=0; i<length; i++) {
+    message_buff[i] = payload[i];
+    }
+
+  // Nachricht mit einen Bit abschließen und zu String umwandeln und ausgeben
+  message_buff[i] = '\0';
+  String msgString = String(message_buff);
+  Serial.println("Payload: " + msgString);
+  Serial.println("Topic: ");
+  Serial.print(topic);
+
+  if (String(topic) == "testESP/relay1/set" && msgString == "on"){
+    digitalWrite(Relay1,HIGH);
+    client.publish("testESP/relay1/state", "on");  
+  }
+  else if (String(topic) == "testESP/relay1/set" && msgString == "off"){
+    digitalWrite(Relay1,LOW);
+    client.publish("testESP/relay1/state", "off");
+  }
+  else if (String(topic) == "testESP/relay2/set" && msgString == "on"){
+    digitalWrite(Relay2,HIGH);
+    client.publish("testESP/relay2/state", "on");
+  }
+  else if (String(topic) == "testESP/relay2/set" && msgString == "off"){
+    digitalWrite(Relay2,LOW);
+    client.publish("testESP/relay2/state", "off");
+  }
+  else if (String(topic) == "testESP/onewire/state" && msgString == "get"){
+    digitalWrite(Relay2,LOW);
+    client.publish("testESP/onewire/tmp",OneWireTemp(true)); //test
+  }
+}
+
+//////////////////////////
+////MQTT Reconnect
+//////////////////////////
+
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+
+    if (client.connect("ESP8266Client")) {
+      Serial.println("connected");
+      
+      // in OutTopic Nachricht ausgeben
+      client.publish("outTopic", "hello world");
+      
+      // subscribe auf folgende Topics
+      client.subscribe("inTopic");
+      client.subscribe("testESP/relay1/set");
+      client.subscribe("testESP/relay2/set");
+      //client.subscribe("testESP/relay3/set");
+      client.subscribe("testESP/onewire/state");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // 5 Sekunden warten bis zu einen erneuten Verbinden
+      delay(5000);
+    }
+  }
+}
