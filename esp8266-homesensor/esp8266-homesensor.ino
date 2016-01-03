@@ -206,7 +206,6 @@ if ((millis() - lastmillis_OneWire) >= (sOneWire[2] * 1000) || now == true ){
   dtostrf(TmpWert, 4, 1,mTmpWert);
   client.publish("testESP/onewire/state", mTmpWert);
   lastmillis_OneWire = millis();
-
   return mTmpWert;
   }
  }
@@ -357,7 +356,12 @@ void callback(char* topic, byte* payload, unsigned int length) {
   }
   else if (String(topic) == "testESP/onewire/state" && msgString == "get"){
     digitalWrite(Relay2,LOW);
-    client.publish("testESP/onewire/tmp",OneWireTemp(true)); //test
+    client.publish("testESP/onewire/tmp",OneWireTemp(true));
+  }
+  else if (String(topic) == "testESP/onewire/setintv"){
+    sOneWire[2] = msgString.toInt();
+    //byte* nState = byte*(sOneWire[2]);
+    client.publish("testESP/onewire/interv_state","changed");
   }
 }
 
@@ -381,6 +385,7 @@ void reconnect() {
       client.subscribe("testESP/relay2/set");
       //client.subscribe("testESP/relay3/set");
       client.subscribe("testESP/onewire/state");
+      client.subscribe("testESP/onewire/setintv");
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
