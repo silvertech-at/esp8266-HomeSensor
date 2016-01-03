@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////
 // Master ESP8266 Sketch
-// V0.4.1
+// V0.4.2
 // by wi3
 // http://blog.silvertech.at
 //////////////////////////////////////////////////////////////
@@ -16,6 +16,8 @@
 #include <DHT.h>                // Adafruit DHT Lib https://github.com/adafruit/DHT-sensor-library
 #include <Bounce2.h>            //Taster Bounce Lib https://github.com/thomasfredericks/Bounce2
 #include <PubSubClient.h>       //MQTT Lib https://github.com/knolleary/pubsubclient
+#include <i2c_sht21.h>   
+#include <Wire.h>       
 
 
 const char* ssid = "WLAN-SSID";                //WLAN SSID
@@ -34,13 +36,13 @@ int t2_old = 0;                                //Taster Zustand bei letzten Durc
    //SensorID 99 = nothing / PIN -1 = nothing 
    //sSensorName {[SensorID],[PIN#1],<Pin#2>,<Interval in s>} //Bus-Type
 int sOneWire[] = {99,13,60};      //1Wire
-int sDHT22[] = {-1,2,-1};
+int sDHT22[] = {-1,-1,-1};
 int sBMP180[] = {-1,-1,-1};
-int sRelay1[] = {4,15,-1};      //Licht Relay
+int sRelay1[] = {4,15,-1};        //Licht Relay
 int sRelay2[] = {-1,14,-1};
 int sMotionDetect[] = {-1,-1};
-int sSi7021[] = {-1,-1};        //I2C
-int sTaster1[] = {-1,4};
+int sSHT21[] = {-1,-1,6};         //I2C
+int sTaster1[] = {-1,-1};
 int sTaster2[] = {-1,12};
 
 
@@ -51,6 +53,7 @@ int sTaster2[] = {-1,12};
 #define taster_2 sTaster2[1]  
 #define Relay1  sRelay1[1] 
 #define Relay2  sRelay2[1]
+#define SHT_address  0x40
 
 
 
@@ -60,6 +63,7 @@ DallasTemperature sensors(&oneWire);
 DHT dht(DHTPIN, DHTTYPE);
 Bounce debouncer_t1 = Bounce();
 Bounce debouncer_t2 = Bounce();
+i2c_sht21 mySHT21;
 
 //MQTT Setup
 WiFiClient espClient;
@@ -72,7 +76,8 @@ int value = 0;
 //Old Millis Variablen pro Sensor
 unsigned long lastmillis_DHT22 = 0;
 unsigned long lastmillis_OneWire = 0;
-unsigned long lastmillis_SI7021 = 0;
+unsigned long lastmillis_SHT21_tmp = 0;
+unsigned long lastmillis_SHT21_hum = 0;
 unsigned long lastmillis_BMP180 = 0;
 
 
@@ -82,6 +87,7 @@ unsigned long lastmillis_BMP180 = 0;
 void setup() {
   
   //Sensor start Bus/Work
+  Wire.begin(2,4);             //SHT21
   sensors.begin();
   dht.begin();
   pinMode(taster_1, INPUT);     //Taster 1
@@ -94,6 +100,7 @@ void setup() {
   debouncer_t1.interval(5);
   debouncer_t2.attach(taster_2);
   debouncer_t2.interval(5);
+  mySHT21.init(SHT_address);    
   
   //Serial Start
   Serial.begin(115200);
@@ -120,7 +127,6 @@ void setup() {
 //MQTT
   client.setServer(mqtt_server, 1883);
   client.setCallback(callback);
-  
 }
 
 //////////////////////
@@ -131,8 +137,9 @@ void loop() {
   //Produktiv
   TasterSchaltung( sRelay1[0]);
   //DHT22Hum(sDHT22[0]);
-  OneWireTemp(false); //warning in function
-  
+  OneWireTemp(false); 
+  SHT21Tmp(false);
+  SHT21Hum(false);
   //MQTT
    if (!client.connected()) {
     reconnect();
@@ -192,7 +199,7 @@ void Data2WebSrv(int SensorID,float Wert){
 ////OneWire Temp Sensor
 ////////////////////////
   
-char *OneWireTemp(bool now){
+float OneWireTemp(bool now){
   
 if ((millis() - lastmillis_OneWire) >= (sOneWire[2] * 1000) || now == true ){
   //Get One Wire Data
@@ -206,7 +213,45 @@ if ((millis() - lastmillis_OneWire) >= (sOneWire[2] * 1000) || now == true ){
   dtostrf(TmpWert, 4, 1,mTmpWert);
   client.publish("testESP/onewire/state", mTmpWert);
   lastmillis_OneWire = millis();
-  return mTmpWert;
+  return TmpWert;
+  }
+ }
+
+
+////////////////////////
+////SHT21 Sensor - Temp
+////////////////////////
+  
+float SHT21Tmp(bool now){
+  
+if ((millis() - lastmillis_SHT21_tmp) >= (sSHT21[2] * 1000) || now == true ){
+  //sensors.requestTemperatures();
+  float SHT_TmpWert = mySHT21.readTemp();
+  //MQTT
+  char mSHT_TmpWert[20];
+  dtostrf(SHT_TmpWert, 4, 1,mSHT_TmpWert);
+  client.publish("testESP/SHT21/tmp/state", mSHT_TmpWert);
+  lastmillis_SHT21_tmp = millis();
+  return SHT_TmpWert;
+  }
+ }
+
+
+////////////////////////
+////SHT21 Sensor - Hum
+////////////////////////
+  
+float SHT21Hum(bool now){
+  
+if ((millis() - lastmillis_SHT21_hum) >= (sSHT21[2] * 1000) || now == true ){
+  //sensors.requestTemperatures();
+  float SHT_HumWert = mySHT21.readHumidity();
+  //MQTT
+  char mSHT_HumWert[20];
+  dtostrf(SHT_HumWert, 4, 1,mSHT_HumWert);
+  client.publish("testESP/SHT21/hum/state", mSHT_HumWert);
+  lastmillis_SHT21_hum = millis();
+  return SHT_HumWert;
   }
  }
   
@@ -317,7 +362,8 @@ void TasterSchaltung(int sID){
 //////////////////////////
   
 void callback(char* topic, byte* payload, unsigned int length) {
-
+  char OW1Buffer[100]; //OneWire Interval - Buffer
+  char OW2Buffer[100]; //OneWire Temperatur Wert - Buffer
   // Hilfsvariablen um empfangene Daten als String zu behandeln
   int i = 0;
   char message_buff[100];
@@ -356,12 +402,12 @@ void callback(char* topic, byte* payload, unsigned int length) {
   }
   else if (String(topic) == "testESP/onewire/state" && msgString == "get"){
     digitalWrite(Relay2,LOW);
-    client.publish("testESP/onewire/tmp",OneWireTemp(true));
+    client.publish("testESP/onewire/tmp",dtostrf(OneWireTemp(true), 1, 0, OW2Buffer));
   }
   else if (String(topic) == "testESP/onewire/setintv"){
     sOneWire[2] = msgString.toInt();
     //byte* nState = byte*(sOneWire[2]);
-    client.publish("testESP/onewire/interv_state","changed");
+    client.publish("testESP/onewire/interv_state",dtostrf(sOneWire[2], 1, 0, OW1Buffer));
   }
 }
 
