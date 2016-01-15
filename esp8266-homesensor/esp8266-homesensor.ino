@@ -5,7 +5,7 @@
 // http://blog.silvertech.at
 //////////////////////////////////////////////////////////////
 // Der Code Arbeitet verschiedene Sensoren ab und
-// überträgt die Daten an den Webserver und MQTT Broker.
+// überträgt die Daten MQTT Broker.
 // 
 // Arduino IDE 1.6.5-R5
 //////////////////////////////////////////////////////////////
@@ -13,10 +13,10 @@
 #include <ESP8266WiFi.h>        //ESP8266
 #include <OneWire.h>            //Onewire Temp Std. Lib (sollte ohne extra download funkt.)
 #include <DallasTemperature.h>  //Onewire Temp. Lib https://github.com/milesburton/Arduino-Temperature-Control-Library
-#include <DHT.h>                // Adafruit DHT Lib https://github.com/adafruit/DHT-sensor-library
+#include <DHT.h>                //Adafruit DHT Lib https://github.com/adafruit/DHT-sensor-library
 #include <Bounce2.h>            //Taster Bounce Lib https://github.com/thomasfredericks/Bounce2
 #include <PubSubClient.h>       //MQTT Lib https://github.com/knolleary/pubsubclient
-#include <i2c_sht21.h>   
+#include <i2c_sht21.h>          //SHT21/SI7021 Lib https://github.com/silvertech-at/esp8266-sht21/tree/master/I2C_SHT21
 #include <Wire.h>       
 
 
@@ -28,15 +28,12 @@ const char* devicename = "testESP";            //Geräte Namen
 const int deviceid = 2;                        //Geräte ID
 
 
-int t1_old = 0;                                //Taster Zustand bei letzten Durchlauf
-int t2_old = 0;                                //Taster Zustand bei letzten Durchlauf
-
 
 //Sensoren definieren
    //SensorID 99 = nothing / PIN -1 = nothing 
    //sSensorName {[SensorID],[PIN#1],<Pin#2>,<Interval in s>} //Bus-Type
 int sOneWire[] = {99,13,60};      //1Wire
-int sDHT22[] = {-1,-1,-1};
+int sDHT22[] = {-1,16,6};
 int sBMP180[] = {-1,-1,-1};
 int sRelay1[] = {4,15,-1};        //Licht Relay
 int sRelay2[] = {-1,14,-1};
@@ -80,6 +77,9 @@ unsigned long lastmillis_SHT21_tmp = 0;
 unsigned long lastmillis_SHT21_hum = 0;
 unsigned long lastmillis_BMP180 = 0;
 
+//Taster Zustand bei letzten Durchlauf
+int t1_old = 0;                                
+int t2_old = 0;
 
 //////////////////////
 ////SETUP
@@ -134,12 +134,13 @@ void setup() {
 //////////////////////
 void loop() {
  
-  //Produktiv
+  //Sensoren
   TasterSchaltung( sRelay1[0]);
-  //DHT22Hum(sDHT22[0]);
+  DHT22Hum(false);
   OneWireTemp(false); 
   SHT21Tmp(false);
   SHT21Hum(false);
+  Serial.println("Neue Zeile");
   //MQTT
    if (!client.connected()) {
     reconnect();
@@ -147,53 +148,6 @@ void loop() {
   client.loop();
 }
 
-
-//////////////////////
-////Data to Webserver
-//////////////////////
-void Data2WebSrv(int SensorID,float Wert){
-  if(SensorID == -1){        //-1 = default Wert
-    return;
-    }
-    Serial.print("connecting to ");
-  Serial.println(host);
-  
-  // Use WiFiClient class to create TCP connections
-  WiFiClient client;
-  const int httpPort = 80;
-  if (!client.connect(host, httpPort)) {
-    Serial.println("connection failed");
-    return;
-  }
-  
-  // We now create a URI for the request
-  String url = "/get_val.php?";
-  url += "SensorID=";
-  url += SensorID;
-  url += "&Wert=";
-  url += Wert;
-  
-  //Serial.print("Requesting URL: ");
-  //Serial.println(url);
-  
-  // This will send the request to the server
-  client.print(String("GET ") + url + " HTTP/1.1\r\n" +
-               "Host: " + host + "\r\n" + 
-               "Connection: close\r\n\r\n");
-  Serial.println("SenID:" +String(SensorID)+ " Wert:" + String(Wert));
-  delay(10);
-  
-  // Read all the lines of the reply from server and print them to Serial
-  while(client.available()){
-    String line = client.readStringUntil('\r');
-    //Serial.print(line);
-  }
-  //Serial.println("closing connection");
-  
-  //Serial.print("Millis= ");
-  //Serial.println(millis());
-  return;
-  }
 
 ////////////////////////
 ////OneWire Temp Sensor
@@ -204,10 +158,7 @@ float OneWireTemp(bool now){
 if ((millis() - lastmillis_OneWire) >= (sOneWire[2] * 1000) || now == true ){
   //Get One Wire Data
   sensors.requestTemperatures();
-  //Serial.println( sensors.getTempCByIndex(0));
-  //Daten an WebSrv übergeben
   float TmpWert = sensors.getTempCByIndex(0);
-  //Data2WebSrv(sID,TmpWert);
   //MQTT
   char mTmpWert[20];
   dtostrf(TmpWert, 4, 1,mTmpWert);
@@ -260,24 +211,23 @@ if ((millis() - lastmillis_SHT21_hum) >= (sSHT21[2] * 1000) || now == true ){
 ////DHT22 Humidity Sensor
 //////////////////////////
 
-void DHT22Hum(int sID){
+float DHT22Hum(bool now){
   
-unsigned long time;
-//Serial.println(millis());                        //Debug Helpers
-//Serial.println(lastmillis_DHT22);                //Debug Helpers
-//Serial.println((millis() - lastmillis_DHT22) );  //Debug Helpers
-if ((millis() - lastmillis_DHT22) >= (sDHT22[2] * 1000)){
-    //Serial.println("DHT22 Hum messung");
-    float HumWert = dht.readHumidity();   
-      if (isnan(HumWert))   //prüft auf gültige zahl                  
+//unsigned long time;
+if ((millis() - lastmillis_DHT22) >= (sDHT22[2] * 1000) || now == true){
+    float DHT22_HumWert = dht.readHumidity();   
+      if (isnan(DHT22_HumWert))   //prüft auf gültige zahl                  
        {
          Serial.println("DHT kann nicht gelesen werden!");
-         Serial.println(HumWert);
+         Serial.println(DHT22_HumWert);
          }
          else
          {
-        Data2WebSrv(sID,HumWert);         //Daten an WebSrv übergeben
+        char mDHT22_HumWert[20];
+        dtostrf(DHT22_HumWert, 4, 1,mDHT22_HumWert);
+        client.publish("testESP/DHT22/hum/state", mDHT22_HumWert);
         lastmillis_DHT22 = millis();       //counter updaten
+        return DHT22_HumWert;
         }
      }
   }
@@ -309,7 +259,7 @@ void TasterSchaltung(int sID){
      if ((t1_stat == HIGH) && (t1_old != t1_stat)){    //Taster1 - ausschalten
        digitalWrite(Relay1,LOW);
        t1_old = HIGH;
-       Data2WebSrv(sID,0);
+       client.publish("testESP/relay1/state", "off");
      }
      else{
        if ((t1_stat == LOW) && (t1_old = HIGH)){       //Taster1 - do nothing
@@ -319,7 +269,7 @@ void TasterSchaltung(int sID){
      if ((t2_stat == HIGH) && (t2_old != t2_stat)){    //Taster2 - ausschalten
        digitalWrite(Relay1,LOW);
        t2_old = HIGH;
-       Data2WebSrv(sID,0);
+       client.publish("testESP/relay1/state", "off");
      }
      else{
        if ((t2_stat == LOW) && (t2_old = HIGH)){       //Taster2 - do nothing
@@ -332,7 +282,7 @@ void TasterSchaltung(int sID){
     if ((t1_stat == HIGH) && (t1_old != t1_stat)){     //Taster1 - einschalten
        digitalWrite(Relay1,HIGH);
        t1_old = HIGH;
-       Data2WebSrv(sID,1);
+       client.publish("testESP/relay1/state", "on");
     }
     else{
      if ((t1_stat == LOW) && (t1_old = HIGH)){        //Taster1 - do nothing
@@ -342,7 +292,7 @@ void TasterSchaltung(int sID){
      if ((t2_stat == HIGH) && (t2_old != t2_stat)){     //Taster2 - einschalten
        digitalWrite(Relay1,HIGH);
        t2_old = HIGH;
-       Data2WebSrv(sID,1);
+       client.publish("testESP/relay1/state", "on");
     }
     else{
      if ((t2_stat == LOW) && (t2_old = HIGH)){        //Taster2 - do nothing
@@ -364,6 +314,12 @@ void TasterSchaltung(int sID){
 void callback(char* topic, byte* payload, unsigned int length) {
   char OW1Buffer[100]; //OneWire Interval - Buffer
   char OW2Buffer[100]; //OneWire Temperatur Wert - Buffer
+  char DHT1Buffer[100]; //DHT Hum - Buffer
+  char DHT2Buffer[100]; //DHT Interval - Buffer
+  char SHT1Buffer[100]; //SHT Tmp - Buffer
+  char SHT2Buffer[100]; //SHT Hum - Buffer
+  char SHT3Buffer[100]; //SHT Interval - Buffer
+  
   // Hilfsvariablen um empfangene Daten als String zu behandeln
   int i = 0;
   char message_buff[100];
@@ -381,9 +337,10 @@ void callback(char* topic, byte* payload, unsigned int length) {
   message_buff[i] = '\0';
   String msgString = String(message_buff);
   Serial.println("Payload: " + msgString);
-  Serial.println("Topic: ");
-  Serial.print(topic);
+  Serial.print("Topic: ");
+  Serial.println(topic);
 
+  //Relay/Licht 1
   if (String(topic) == "testESP/relay1/set" && msgString == "on"){
     digitalWrite(Relay1,HIGH);
     client.publish("testESP/relay1/state", "on");  
@@ -392,6 +349,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
     digitalWrite(Relay1,LOW);
     client.publish("testESP/relay1/state", "off");
   }
+  //Relay/Licht 2
   else if (String(topic) == "testESP/relay2/set" && msgString == "on"){
     digitalWrite(Relay2,HIGH);
     client.publish("testESP/relay2/state", "on");
@@ -400,16 +358,36 @@ void callback(char* topic, byte* payload, unsigned int length) {
     digitalWrite(Relay2,LOW);
     client.publish("testESP/relay2/state", "off");
   }
+  //OneWire
   else if (String(topic) == "testESP/onewire/state" && msgString == "get"){
-    digitalWrite(Relay2,LOW);
     client.publish("testESP/onewire/tmp",dtostrf(OneWireTemp(true), 1, 0, OW2Buffer));
   }
   else if (String(topic) == "testESP/onewire/setintv"){
     sOneWire[2] = msgString.toInt();
-    //byte* nState = byte*(sOneWire[2]);
-    client.publish("testESP/onewire/interv_state",dtostrf(sOneWire[2], 1, 0, OW1Buffer));
+    client.publish("testESP/onewire/interv_state" ,dtostrf(sOneWire[2], 1, 0, OW1Buffer));
+  }
+  //DHT22
+    else if (String(topic) == "testESP/DHT22/state" && msgString == "get"){
+    client.publish("testESP/DHT22/hum",dtostrf(DHT22Hum(true), 1, 0, DHT1Buffer));
+  }
+  else if (String(topic) == "testESP/DHT22/setintv"){
+    sDHT22[2] = msgString.toInt();
+    client.publish("testESP/DHT22/interv_state" ,dtostrf(sDHT22[2], 1, 0, DHT2Buffer));
+  }
+  //SHT21
+  else if (String(topic) == "testESP/SHT/setintv"){
+    sSHT21[2] = msgString.toInt();
+    client.publish("testESP/SHT21/interv_state" ,dtostrf(sSHT21[2], 1, 0, SHT3Buffer));
+  }
+   else if (String(topic) == "testESP/SHT/hum/state" && msgString == "get"){
+    client.publish("testESP/SHT21/hum",dtostrf(SHT21Tmp(true), 1, 0, SHT2Buffer));
+  }
+     else if (String(topic) == "testESP/SHT/tmp/state" && msgString == "get"){
+    client.publish("testESP/SHT21/tmp",dtostrf(SHT21Hum(true), 1, 0, SHT1Buffer));
   }
 }
+
+//DHT22Hum
 
 //////////////////////////
 ////MQTT Reconnect
@@ -427,11 +405,12 @@ void reconnect() {
       
       // subscribe auf folgende Topics
       client.subscribe("inTopic");
-      client.subscribe("testESP/relay1/set");
-      client.subscribe("testESP/relay2/set");
+      client.subscribe("testESP/#");  //Wildcard
+      //client.subscribe("testESP/relay1/set");
+      //client.subscribe("testESP/relay2/set");
       //client.subscribe("testESP/relay3/set");
-      client.subscribe("testESP/onewire/state");
-      client.subscribe("testESP/onewire/setintv");
+      //client.subscribe("testESP/onewire/state");
+      //client.subscribe("testESP/onewire/setintv");
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
