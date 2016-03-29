@@ -4,8 +4,8 @@
 // by wi3
 // http://blog.silvertech.at
 //////////////////////////////////////////////////////////////
-// Der Code Arbeitet verschiedene Sensoren ab und
-// überträgt die Daten MQTT Broker.
+// MQTT Aktor und Sensor Code für verschiedenste 
+// konfigurationen und Anwendungsfälle
 // 
 // Arduino IDE 1.6.5-R5
 //////////////////////////////////////////////////////////////
@@ -27,26 +27,45 @@ const char* ssid = "WLAN-SSID";                //WLAN SSID
 const char* password = "password-1";           //WLAN Kennwort
 const char* mqtt_server = "192.168.88.103";    //MQTT Broker
 const char* devicename = "ProtoESP";            //Geräte Namen
-const bool akkumode = true;                    //Betrieb mit oder ohne Akku
+const bool akkumode = false;                    //Betrieb mit oder ohne Akku (true/false)
 int deepsleeptime = 60;                        //DeepSleep Zeit in Sekunden
 
 
 //Sensoren definieren
    //SensorID 99 = nothing / PIN -1 = nothing 
-   //sSensorName {[SensorID],[PIN#1],<Pin#2>,<Interval in s>} //Bus-Type
-int sOneWire[] = {99,13,60};      //1Wire
-int sDHT22[] = {-1,-1,16};
-int sBMP180[] = {-1,-1,-1};
-int sRelay1[] = {4,15,-1};        //Licht Relay
-int sRelay2[] = {-1,14,-1};
-int sMotionDetect[] = {-1,-1};
-int sSHT21[] = {-1,-1,0};         //I2C
+   //sSensorName {[SensorID],[PIN#1],<Interval in s>} //Bus-Type
+int sOneWire[] = {99,13,10};        //1Wire
+int sDHT22[] = {-1,16,-1};
+int sBMP180[] = {-1,-1,-1};         //funktion fehlt noch
+int sRelay1[] = {-1,14,-1};         //Relay/LED (Taster)
+int sRelay2[] = {-1,15,-1};         //Relay/LED
+int sRelay3[] = {-1,16,-1};         //Relay/LED
+int sRelay4[] = {-1,5,-1};          //Relay/LED
+int sMotionDetect[] = {-1,-1};      //Funktion fehlt noch
+int sSHT21[] = {-1,-1,10};          //I2C GPIO 2+4 
 int sTaster1[] = {-1,-1};
 int sTaster2[] = {-1,12};
 
 ///////////////////////////////////////////////////////////////////////////////////////////////
 // Ende Anpassungsbereich                                                                    //
 ///////////////////////////////////////////////////////////////////////////////////////////////
+//Erklärung
+//Grob-Code:
+//Im Loop werden jene Sensoren die einen PIN definiert haben oder einen Interval
+//ausgelesen und per MQTT in der Intervallzeit an den MQTT Broker gesendet.
+//Alle Empfangenen Nachrichten werden am Ende der Durchlaufzeit behandelt.
+//
+//Akkumodus:
+//Im Akkumodus ist automatisch die "deepsleeptime" auch die Sensoren Interval Zeit,
+//jene am Sensor definierte Zeit wird overruled.
+//
+//MQTT:
+//Es werden alle Topics per Wildcard subscribt mit "Devicenamen/"
+//wie zb "ProtoESP/".
+//Der Gerätename muss manuell per Find and Replace getauscht werden.
+//
+////////////////////////////////////////////////////////////////////////////////////////////////
+
 
 #define ONE_WIRE_BUS sOneWire[1]
 #define DHTPIN sDHT22[1]
@@ -55,6 +74,8 @@ int sTaster2[] = {-1,12};
 #define taster_2 sTaster2[1]  
 #define Relay1  sRelay1[1] 
 #define Relay2  sRelay2[1]
+#define Relay3  sRelay3[1] 
+#define Relay4  sRelay4[1]
 #define SHT_address  0x40
 
 
@@ -97,8 +118,13 @@ void setup() {
   pinMode(taster_2, INPUT);     //Taster 2
   pinMode(Relay1,OUTPUT);      //Relay Relay1
   pinMode(Relay2,OUTPUT);      //Relay Relay2
-  digitalWrite(Relay1,LOW);    //Default Wert nach PowerOn
-  digitalWrite(Relay2,LOW);    //Default Wert nach PowerOn
+  pinMode(Relay3,OUTPUT);      //Relay Relay3
+  pinMode(Relay4,OUTPUT);      //Relay Relay4
+  
+  if (akkumode == true) digitalWrite(Relay1,LOW);    //Default Wert nach PowerOn
+  if (akkumode == true) digitalWrite(Relay2,LOW);    //Default Wert nach PowerOn
+  if (akkumode == true) digitalWrite(Relay3,LOW);    //Default Wert nach PowerOn
+  if (akkumode == true) digitalWrite(Relay4,LOW);    //Default Wert nach PowerOn
   debouncer_t1.attach(taster_1);
   debouncer_t1.interval(5);
   debouncer_t2.attach(taster_2);
@@ -141,13 +167,15 @@ void loop() {
    if (!client.connected()) {
     reconnect();
   }
-  //Sensoren
-  TasterSchaltung( sRelay1[0]);
-  DHT22Hum(false);
-  OneWireTemp(false); 
-  SHT21Tmp(false);
-  SHT21Hum(false);
-  Serial.println(" ");
+  //Sensoren, Funktion startet nur wenn PIN konfiguriert
+  if (sRelay1[1] != -1) TasterSchaltung( sRelay1[0]); //recode this function !
+  if (sDHT22[1] != -1) DHT22Hum(false);
+  if (sOneWire[1] != -1) OneWireTemp(false); 
+  if (sSHT21[2] != -1) SHT21Tmp(false);
+  if (sSHT21[2] != -1) SHT21Hum(false);
+
+  
+  //Serial.println(" ");
   client.loop();
   if (akkumode == true){
     ESP.deepSleep((deepsleeptime * 1000000));
@@ -161,14 +189,14 @@ void loop() {
   
 float OneWireTemp(bool now){
   
-if ((millis() - lastmillis_OneWire) >= (sOneWire[2] * 1000) || now == true ){
+if ((millis() - lastmillis_OneWire) >= (sOneWire[2] * 1000) || now == true || akkumode ==true ){
   //Get One Wire Data
   sensors.requestTemperatures();
   float TmpWert = sensors.getTempCByIndex(0);
   //MQTT
   char mTmpWert[20];
   dtostrf(TmpWert, 4, 1,mTmpWert);
-  client.publish("ProtoESP/onewire/state", mTmpWert);
+  client.publish("ProtoESP/onewire/tmp/state", mTmpWert);
   lastmillis_OneWire = millis();
   return TmpWert;
   }
@@ -181,7 +209,7 @@ if ((millis() - lastmillis_OneWire) >= (sOneWire[2] * 1000) || now == true ){
   
 float SHT21Tmp(bool now){
   
-if ((millis() - lastmillis_SHT21_tmp) >= (sSHT21[2] * 1000) || now == true ){
+if ((millis() - lastmillis_SHT21_tmp) >= (sSHT21[2] * 1000) || now == true || akkumode ==true ){
   //sensors.requestTemperatures();
   float SHT_TmpWert = mySHT21.readTemp();
   //MQTT
@@ -200,7 +228,7 @@ if ((millis() - lastmillis_SHT21_tmp) >= (sSHT21[2] * 1000) || now == true ){
   
 float SHT21Hum(bool now){
   
-if ((millis() - lastmillis_SHT21_hum) >= (sSHT21[2] * 1000) || now == true ){
+if ((millis() - lastmillis_SHT21_hum) >= (sSHT21[2] * 1000) || now == true || akkumode ==true ){
   //sensors.requestTemperatures();
   float SHT_HumWert = mySHT21.readHumidity();
   //MQTT
@@ -220,7 +248,7 @@ if ((millis() - lastmillis_SHT21_hum) >= (sSHT21[2] * 1000) || now == true ){
 float DHT22Hum(bool now){
   
 //unsigned long time;
-if ((millis() - lastmillis_DHT22) >= (sDHT22[2] * 1000) || now == true){
+if ((millis() - lastmillis_DHT22) >= (sDHT22[2] * 1000) || now == true || akkumode ==true ){
     float DHT22_HumWert = dht.readHumidity();   
       if (isnan(DHT22_HumWert))   //prüft auf gültige zahl                  
        {
@@ -363,6 +391,26 @@ void callback(char* topic, byte* payload, unsigned int length) {
   else if (String(topic) == "ProtoESP/relay2/set" && msgString == "off"){
     digitalWrite(Relay2,LOW);
     client.publish("ProtoESP/relay2/state", "off");
+  }
+  //Relay/Licht 3
+  else if (String(topic) == "ProtoESP/relay3/set" && msgString == "on"){
+    digitalWrite(Relay3,HIGH);
+    client.publish("ProtoESP/relay3/state", "on");  
+  }
+  else if (String(topic) == "ProtoESP/relay3/set" && msgString == "off"){
+    digitalWrite(Relay3,LOW);
+    client.publish("ProtoESP/relay3/state", "off");
+  }
+    //Relay/Licht 4
+  else if (String(topic) == "ProtoESP/relay4/set" && msgString == "on"){
+    digitalWrite(Relay4,HIGH);
+    client.publish("ProtoESP/relay4/state", "on");  
+    Serial.print("Relay 4 on");
+  }
+  else if (String(topic) == "ProtoESP/relay4/set" && msgString == "off"){
+    digitalWrite(Relay4,LOW);
+    client.publish("ProtoESP/relay4/state", "off");
+    Serial.print("Relay 4 off");
   }
   //OneWire
   else if (String(topic) == "ProtoESP/onewire/" && msgString == "get"){
