@@ -1,20 +1,20 @@
 //////////////////////////////////////////////////////////////
-// Master ESP8266 Sketch
-// V0.4.4
+// Smarthome ESP
+// V0.4.6
 // by wi3
 // http://blog.silvertech.at
 //////////////////////////////////////////////////////////////
 // MQTT Aktor und Sensor Code für verschiedenste 
 // konfigurationen und Anwendungsfälle
 // 
-// Arduino IDE 1.6.5-R5
+// Arduino IDE 1.6.8
+// ESP8266 Lib 2.2.0
 //////////////////////////////////////////////////////////////
 
-#include <ESP8266WiFi.h>        //ESP8266
+#include <ESP8266WiFi.h>        //ESP8266 https://github.com/esp8266/Arduino
 #include <OneWire.h>            //Onewire Temp Std. Lib (sollte ohne extra download funkt.)
 #include <DallasTemperature.h>  //Onewire Temp. Lib https://github.com/milesburton/Arduino-Temperature-Control-Library
 #include <DHT.h>                //Adafruit DHT Lib https://github.com/adafruit/DHT-sensor-library
-#include <Bounce2.h>            //Taster Bounce Lib https://github.com/thomasfredericks/Bounce2
 #include <PubSubClient.h>       //MQTT Lib https://github.com/knolleary/pubsubclient
 #include <i2c_sht21.h>          //SHT21/SI7021 Lib https://github.com/silvertech-at/esp8266-sht21/tree/master/I2C_SHT21
 #include <Wire.h>       
@@ -23,12 +23,12 @@
 // Bereich unterhalb je Gerät anpassen                                                       //
 ///////////////////////////////////////////////////////////////////////////////////////////////
 
-const char* ssid = "WLAN-SSID";                //WLAN SSID
-const char* password = "password-1";           //WLAN Kennwort
-const char* mqtt_server = "192.168.88.103";    //MQTT Broker
-const char* devicename = "ProtoESP";            //Geräte Namen
+const char* ssid = "WLAN-SSID";                 //WLAN SSID
+const char* password = "password-1";            //WLAN Kennwort
+const char* mqtt_server = "192.168.88.103";     //MQTT Broker
+const char* devicename = "TestESP";            //Geräte Namen
 const bool akkumode = false;                    //Betrieb mit oder ohne Akku (true/false)
-int deepsleeptime = 60;                        //DeepSleep Zeit in Sekunden
+int deepsleeptime = 60;                         //DeepSleep Zeit in Sekunden
 
 
 //Sensoren definieren
@@ -43,15 +43,15 @@ int sRelay3[] = {-1,16,-1};         //Relay/LED
 int sRelay4[] = {-1,5,-1};          //Relay/LED
 int sMotionDetect[] = {-1,-1};      //Funktion fehlt noch
 int sSHT21[] = {-1,-1,10};          //I2C GPIO 2+4 
-int sTaster1[] = {-1,-1};
-int sTaster2[] = {-1,12};
+int sTaster1[] = {-1,12};           //Taster
+int sTaster2[] = {-1,-1};           //Taster
 
 ///////////////////////////////////////////////////////////////////////////////////////////////
 // Ende Anpassungsbereich                                                                    //
 ///////////////////////////////////////////////////////////////////////////////////////////////
 //Erklärung
-//Grob-Code:
-//Im Loop werden jene Sensoren die einen PIN definiert haben oder einen Interval
+//Code grob Beschreibung:
+//Im Loop werden jene Sensoren die einen PIN oder Interval definiert haben
 //ausgelesen und per MQTT in der Intervallzeit an den MQTT Broker gesendet.
 //Alle Empfangenen Nachrichten werden am Ende der Durchlaufzeit behandelt.
 //
@@ -61,7 +61,7 @@ int sTaster2[] = {-1,12};
 //
 //MQTT:
 //Es werden alle Topics per Wildcard subscribt mit "Devicenamen/"
-//wie zb "ProtoESP/".
+//wie zb "TestESP/".
 //Der Gerätename muss manuell per Find and Replace getauscht werden.
 //
 ////////////////////////////////////////////////////////////////////////////////////////////////
@@ -70,22 +70,24 @@ int sTaster2[] = {-1,12};
 #define ONE_WIRE_BUS sOneWire[1]
 #define DHTPIN sDHT22[1]
 #define DHTTYPE DHT22
-#define taster_1 sTaster1[1]  
-#define taster_2 sTaster2[1]  
+#define TasterPin_1 sTaster1[1]  
+#define TasterPin_2 sTaster2[1]  
 #define Relay1  sRelay1[1] 
 #define Relay2  sRelay2[1]
 #define Relay3  sRelay3[1] 
 #define Relay4  sRelay4[1]
 #define SHT_address  0x40
 
+volatile byte state = LOW;
 
-//Sensor Setup
+
+//Sensor/Aktor Setup
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 DHT dht(DHTPIN, DHTTYPE);
-Bounce debouncer_t1 = Bounce();
-Bounce debouncer_t2 = Bounce();
 i2c_sht21 mySHT21;
+
+unsigned long switch_bebouncetime = 250;  //in ms
 
 //MQTT Setup
 WiFiClient espClient;
@@ -94,16 +96,18 @@ long lastMsg = 0;
 char msg[50];
 int value = 0;
 
+
 //Old Millis Variablen pro Sensor
 unsigned long lastmillis_DHT22 = 0;
 unsigned long lastmillis_OneWire = 0;
 unsigned long lastmillis_SHT21_tmp = 0;
 unsigned long lastmillis_SHT21_hum = 0;
 unsigned long lastmillis_BMP180 = 0;
+unsigned long lastmillis_Switch = 0;
 
-//Taster Zustand bei letzten Durchlauf
-int t1_old = 0;                                
-int t2_old = 0;
+//MQTT Interrupt
+boolean switch_high = false;
+
 
 //////////////////////
 //// SETUP
@@ -114,21 +118,20 @@ void setup() {
   Wire.begin(2,4);             //SHT21
   sensors.begin();
   dht.begin();
-  pinMode(taster_1, INPUT);     //Taster 1
-  pinMode(taster_2, INPUT);     //Taster 2
+  //pinMode(TasterPin_1, INPUT);     //Taster 1
+  pinMode(TasterPin_2, INPUT);     //Taster 2
   pinMode(Relay1,OUTPUT);      //Relay Relay1
   pinMode(Relay2,OUTPUT);      //Relay Relay2
   pinMode(Relay3,OUTPUT);      //Relay Relay3
   pinMode(Relay4,OUTPUT);      //Relay Relay4
+  pinMode(sTaster1[1], INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(sTaster1[1]), fSwitch, RISING);
   
   if (akkumode == true) digitalWrite(Relay1,LOW);    //Default Wert nach PowerOn
   if (akkumode == true) digitalWrite(Relay2,LOW);    //Default Wert nach PowerOn
   if (akkumode == true) digitalWrite(Relay3,LOW);    //Default Wert nach PowerOn
   if (akkumode == true) digitalWrite(Relay4,LOW);    //Default Wert nach PowerOn
-  debouncer_t1.attach(taster_1);
-  debouncer_t1.interval(5);
-  debouncer_t2.attach(taster_2);
-  debouncer_t2.interval(5);
+  
   mySHT21.init(SHT_address);    
   
   //Serial Start
@@ -167,13 +170,16 @@ void loop() {
    if (!client.connected()) {
     reconnect();
   }
-  //Sensoren, Funktion startet nur wenn PIN konfiguriert
-  if (sRelay1[1] != -1) TasterSchaltung( sRelay1[0]); //recode this function !
+  //Sensoren, Funktion startet nur wenn PIN/Intervall konfiguriert
   if (sDHT22[1] != -1) DHT22Hum(false);
   if (sOneWire[1] != -1) OneWireTemp(false); 
   if (sSHT21[2] != -1) SHT21Tmp(false);
   if (sSHT21[2] != -1) SHT21Hum(false);
 
+  if (switch_high == true){
+    client.publish("TestESP/switch/state", "changed");
+    switch_high = false;
+  }
   
   //Serial.println(" ");
   client.loop();
@@ -181,6 +187,20 @@ void loop() {
     ESP.deepSleep((deepsleeptime * 1000000));
     }
 }
+
+////////////////////////
+//// Taster - Funktion
+////////////////////////
+
+void fSwitch(){
+ if ((millis() - lastmillis_Switch) >= switch_bebouncetime){
+  switch_high = true;
+  Serial.println("Light Changed");
+  lastmillis_Switch = millis();
+  
+ }
+}
+
 
 
 ////////////////////////
@@ -196,7 +216,7 @@ if ((millis() - lastmillis_OneWire) >= (sOneWire[2] * 1000) || now == true || ak
   //MQTT
   char mTmpWert[20];
   dtostrf(TmpWert, 4, 1,mTmpWert);
-  client.publish("ProtoESP/onewire/tmp/state", mTmpWert);
+  client.publish("TestESP/onewire/tmp/state", mTmpWert);
   lastmillis_OneWire = millis();
   return TmpWert;
   }
@@ -215,7 +235,7 @@ if ((millis() - lastmillis_SHT21_tmp) >= (sSHT21[2] * 1000) || now == true || ak
   //MQTT
   char mSHT_TmpWert[20];
   dtostrf(SHT_TmpWert, 4, 1,mSHT_TmpWert);
-  client.publish("ProtoESP/SHT21/tmp/state", mSHT_TmpWert);
+  client.publish("TestESP/SHT21/tmp/state", mSHT_TmpWert);
   lastmillis_SHT21_tmp = millis();
   return SHT_TmpWert;
   }
@@ -234,7 +254,7 @@ if ((millis() - lastmillis_SHT21_hum) >= (sSHT21[2] * 1000) || now == true || ak
   //MQTT
   char mSHT_HumWert[20];
   dtostrf(SHT_HumWert, 4, 1,mSHT_HumWert);
-  client.publish("ProtoESP/SHT21/hum/state", mSHT_HumWert);
+  client.publish("TestESP/SHT21/hum/state", mSHT_HumWert);
   lastmillis_SHT21_hum = millis();
   return SHT_HumWert;
   }
@@ -259,85 +279,11 @@ if ((millis() - lastmillis_DHT22) >= (sDHT22[2] * 1000) || now == true || akkumo
          {
         char mDHT22_HumWert[20];
         dtostrf(DHT22_HumWert, 4, 1,mDHT22_HumWert);
-        client.publish("ProtoESP/DHT22/hum/state", mDHT22_HumWert);
+        client.publish("TestESP/DHT22/hum/state", mDHT22_HumWert);
         lastmillis_DHT22 = millis();       //counter updaten
         return DHT22_HumWert;
         }
      }
-  }
- 
-//////////////////////////
-//// 2 Taster Schaltung
-//////////////////////////
-
-void TasterSchaltung(int sID){
-  
-  debouncer_t1.update();
- debouncer_t2.update();
- int t1_stat = debouncer_t1.read();
- int t2_stat = debouncer_t2.read();
- int ausg_stat = digitalRead(Relay1);
- //get informations
- //Serial.println("    ");
- //Serial.print("Relay1= ");
- //Serial.println(ausg_stat);
- //Serial.print("taster1u2= ");
- //Serial.print(t1_stat );
- //Serial.println(t2_stat);
- 
- 
- //Zustände des Ausg. (zu Relay) behandeln
- switch (ausg_stat){
-  case HIGH:                                           //LICHT IST EIN
-   //Serial.println("Licht ist an");                    
-     if ((t1_stat == HIGH) && (t1_old != t1_stat)){    //Taster1 - ausschalten
-       digitalWrite(Relay1,LOW);
-       t1_old = HIGH;
-       client.publish("ProtoESP/relay1/state", "off");
-     }
-     else{
-       if ((t1_stat == LOW) && (t1_old = HIGH)){       //Taster1 - do nothing
-         t1_old = LOW;
-       }
-     }
-     if ((t2_stat == HIGH) && (t2_old != t2_stat)){    //Taster2 - ausschalten
-       digitalWrite(Relay1,LOW);
-       t2_old = HIGH;
-       client.publish("ProtoESP/relay1/state", "off");
-     }
-     else{
-       if ((t2_stat == LOW) && (t2_old = HIGH)){       //Taster2 - do nothing
-         t2_old = LOW;
-       }
-     }
-     break;
-  case LOW:                                            //LICHT IST AUS
-   //Serial.println("Licht ist aus");
-    if ((t1_stat == HIGH) && (t1_old != t1_stat)){     //Taster1 - einschalten
-       digitalWrite(Relay1,HIGH);
-       t1_old = HIGH;
-       client.publish("ProtoESP/relay1/state", "on");
-    }
-    else{
-     if ((t1_stat == LOW) && (t1_old = HIGH)){        //Taster1 - do nothing
-         t1_old = LOW;
-       }
-    }
-     if ((t2_stat == HIGH) && (t2_old != t2_stat)){     //Taster2 - einschalten
-       digitalWrite(Relay1,HIGH);
-       t2_old = HIGH;
-       client.publish("ProtoESP/relay1/state", "on");
-    }
-    else{
-     if ((t2_stat == LOW) && (t2_old = HIGH)){        //Taster2 - do nothing
-         t2_old = LOW;
-       }
-    }
-     break;
-  default:
-  Serial.println("PANIC - we have an issue");
-  break;
-   }
   }
   
 
@@ -373,71 +319,75 @@ void callback(char* topic, byte* payload, unsigned int length) {
   Serial.println("Payload: " + msgString);
   Serial.print("Topic: ");
   Serial.println(topic);
-
   //Relay/Licht 1
-  if (String(topic) == "ProtoESP/relay1/set" && msgString == "on"){
-    digitalWrite(Relay1,HIGH);
-    client.publish("ProtoESP/relay1/state", "on");  
+  if (String(topic) == "TestESP/switch/state"){
+   //do simply nothing  
   }
-  else if (String(topic) == "ProtoESP/relay1/set" && msgString == "off"){
+  
+  //Relay/Licht 1
+  else if (String(topic) == "TestESP/relay1/set" && msgString == "on"){
+    digitalWrite(Relay1,HIGH);
+    client.publish("TestESP/relay1/state", "on");  
+  }
+  else if (String(topic) == "TestESP/relay1/set" && msgString == "off"){
     digitalWrite(Relay1,LOW);
-    client.publish("ProtoESP/relay1/state", "off");
+    client.publish("TestESP/relay1/state", "off");
   }
   //Relay/Licht 2
-  else if (String(topic) == "ProtoESP/relay2/set" && msgString == "on"){
+  else if (String(topic) == "TestESP/relay2/set" && msgString == "on"){
     digitalWrite(Relay2,HIGH);
-    client.publish("ProtoESP/relay2/state", "on");
+    client.publish("TestESP/relay2/state", "on");
   }
-  else if (String(topic) == "ProtoESP/relay2/set" && msgString == "off"){
+  else if (String(topic) == "TestESP/relay2/set" && msgString == "off"){
     digitalWrite(Relay2,LOW);
-    client.publish("ProtoESP/relay2/state", "off");
+    client.publish("TestESP/relay2/state", "off");
   }
   //Relay/Licht 3
-  else if (String(topic) == "ProtoESP/relay3/set" && msgString == "on"){
+  else if (String(topic) == "TestESP/relay3/set" && msgString == "on"){
     digitalWrite(Relay3,HIGH);
-    client.publish("ProtoESP/relay3/state", "on");  
+    client.publish("TestESP/relay3/state", "on");  
   }
-  else if (String(topic) == "ProtoESP/relay3/set" && msgString == "off"){
+  else if (String(topic) == "TestESP/relay3/set" && msgString == "off"){
     digitalWrite(Relay3,LOW);
-    client.publish("ProtoESP/relay3/state", "off");
+    client.publish("TestESP/relay3/state", "off");
   }
     //Relay/Licht 4
-  else if (String(topic) == "ProtoESP/relay4/set" && msgString == "on"){
+  else if (String(topic) == "TestESP/relay4/set" && msgString == "on"){
     digitalWrite(Relay4,HIGH);
-    client.publish("ProtoESP/relay4/state", "on");  
+    client.publish("TestESP/relay4/state", "on");  
     Serial.print("Relay 4 on");
   }
-  else if (String(topic) == "ProtoESP/relay4/set" && msgString == "off"){
+  else if (String(topic) == "TestESP/relay4/set" && msgString == "off"){
     digitalWrite(Relay4,LOW);
-    client.publish("ProtoESP/relay4/state", "off");
+    client.publish("TestESP/relay4/state", "off");
     Serial.print("Relay 4 off");
   }
   //OneWire
-  else if (String(topic) == "ProtoESP/onewire/" && msgString == "get"){
-    client.publish("ProtoESP/onewire/tmp/state",dtostrf(OneWireTemp(true), 1, 0, OW2Buffer));
+  else if (String(topic) == "TestESP/onewire/" && msgString == "get"){
+    client.publish("TestESP/onewire/tmp/state",dtostrf(OneWireTemp(true), 1, 0, OW2Buffer));
   }
-  else if (String(topic) == "ProtoESP/onewire/setintv"){
+  else if (String(topic) == "TestESP/onewire/setintv"){
     sOneWire[2] = msgString.toInt();
-    client.publish("ProtoESP/onewire/interv_state" ,dtostrf(sOneWire[2], 1, 0, OW1Buffer));
+    client.publish("TestESP/onewire/interv_state" ,dtostrf(sOneWire[2], 1, 0, OW1Buffer));
   }
   //DHT22
-    else if (String(topic) == "ProtoESP/DHT22" && msgString == "get"){
-    client.publish("ProtoESP/DHT22/hum/state",dtostrf(DHT22Hum(true), 1, 0, DHT1Buffer));
+    else if (String(topic) == "TestESP/DHT22" && msgString == "get"){
+    client.publish("TestESP/DHT22/hum/state",dtostrf(DHT22Hum(true), 1, 0, DHT1Buffer));
   }
-  else if (String(topic) == "ProtoESP/DHT22/setintv"){
+  else if (String(topic) == "TestESP/DHT22/setintv"){
     sDHT22[2] = msgString.toInt();
-    client.publish("ProtoESP/DHT22/interv_state" ,dtostrf(sDHT22[2], 1, 0, DHT2Buffer));
+    client.publish("TestESP/DHT22/interv_state" ,dtostrf(sDHT22[2], 1, 0, DHT2Buffer));
   }
   //SHT21
-  else if (String(topic) == "ProtoESP/SHT/setintv"){
+  else if (String(topic) == "TestESP/SHT/setintv"){
     sSHT21[2] = msgString.toInt();
-    client.publish("ProtoESP/SHT21/interv_state" ,dtostrf(sSHT21[2], 1, 0, SHT3Buffer));
+    client.publish("TestESP/SHT21/interv_state" ,dtostrf(sSHT21[2], 1, 0, SHT3Buffer));
   }
-   else if (String(topic) == "ProtoESP/SHT/hum/" && msgString == "get"){
-    client.publish("ProtoESP/SHT21/hum/state",dtostrf(SHT21Hum(true), 1, 0, SHT2Buffer));
+   else if (String(topic) == "TestESP/SHT/hum/" && msgString == "get"){
+    client.publish("TestESP/SHT21/hum/state",dtostrf(SHT21Hum(true), 1, 0, SHT2Buffer));
   }
-     else if (String(topic) == "ProtoESP/SHT/tmp/" && msgString == "get"){
-    client.publish("ProtoESP/SHT21/tmp/state",dtostrf(SHT21Tmp(true), 1, 0, SHT1Buffer));
+     else if (String(topic) == "TestESP/SHT/tmp/" && msgString == "get"){
+    client.publish("TestESP/SHT21/tmp/state",dtostrf(SHT21Tmp(true), 1, 0, SHT1Buffer));
   }
 }
 
@@ -460,15 +410,15 @@ void reconnect() {
     if (client.connect((char*) clientName.c_str())) {
       Serial.println("connected with client name ");
       Serial.println(clientName);
-      client.publish("ProtoESP/boot", "up and running");
+      client.publish("TestESP/boot", "up and running");
       
       // subscribe auf folgende Topics
-      client.subscribe("ProtoESP/#");  //Wildcard
-      //client.subscribe("ProtoESP/relay1/set");
-      //client.subscribe("ProtoESP/relay2/set");
-      //client.subscribe("ProtoESP/relay3/set");
-      //client.subscribe("ProtoESP/onewire/state");
-      //client.subscribe("ProtoESP/onewire/setintv");
+      client.subscribe("TestESP/#");  //Wildcard
+      //client.subscribe("TestESP/relay1/set");
+      //client.subscribe("TestESP/relay2/set");
+      //client.subscribe("TestESP/relay3/set");
+      //client.subscribe("TestESP/onewire/state");
+      //client.subscribe("TestESP/onewire/setintv");
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
